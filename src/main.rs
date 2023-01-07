@@ -93,7 +93,7 @@ impl Cursor {
 
     fn is_past_row_end(&self, text: &Text) -> bool {
         let row_len = text.rows[self.row_index()].chars.len();
-        self.col_index() as isize >= row_len as isize - 1
+        self.col_index() as isize >= row_len as isize
     }
 
     fn move_cursor_end_of_row(
@@ -130,6 +130,11 @@ impl Cursor {
                 } else if self.ren_row > 0 {
                     self.ren_row -= 1;
                 }
+
+                // if we are past last char in row move back to last char
+                if self.is_past_row_end(text) {
+                    self.move_cursor_end_of_row(stdout, text)?;
+                }
             }
             // DOWN
             KeyCode::Char('j') => {
@@ -139,6 +144,11 @@ impl Cursor {
                     } else {
                         self.ren_row += 1;
                     }
+                }
+
+                // if we are past last char in row move back to last char
+                if self.is_past_row_end(text) {
+                    self.move_cursor_end_of_row(stdout, text)?;
                 }
             }
             // LEFT
@@ -163,12 +173,6 @@ impl Cursor {
         }
 
         // move cursor
-
-        // if we are past last char in row move back to last char
-        if self.is_past_row_end(text) {
-            self.move_cursor_end_of_row(stdout, text)?;
-        }
-
         execute!(stdout, cursor::MoveTo(self.col as u16, self.row as u16))?;
 
         Ok(())
