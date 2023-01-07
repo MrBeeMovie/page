@@ -42,19 +42,19 @@ fn fin_term(stdout: &mut Stdout) -> Result<(), io::Error> {
 
 #[derive(Default, Debug)]
 struct Cursor {
-    x: usize,
-    y: usize,
-    ren_x: usize,
-    ren_y: usize,
+    col: usize,
+    row: usize,
+    ren_col: usize,
+    ren_row: usize,
 }
 
 impl Cursor {
     fn new() -> Cursor {
         Cursor {
-            x: 0,
-            y: 0,
-            ren_x: 0,
-            ren_y: 0,
+            col: 0,
+            row: 0,
+            ren_col: 0,
+            ren_row: 0,
         }
     }
 
@@ -72,76 +72,116 @@ impl Cursor {
                     exit(0);
                 }
 
-                // move
-                KeyCode::Char('k') => {
-                    if self.y > 0 {
-                        self.y -= 1;
-
-                        let row_len = text.rows[self.y + self.ren_y].chars.len();
-
-                        // if we are past last char in row move back to last char
-                        if self.x + self.ren_x >= row_len {
-                            self.x = text.rows[self.y + self.ren_y].chars.len();
-                            self.ren_x =
-                                cmp::max(0, row_len as i16 - text.term_width as i16) as usize;
-                        }
-
-                        execute!(stdout, cursor::MoveTo(self.x as u16, self.y as u16))?;
-                    } else if self.ren_y > 0 {
-                        self.ren_y -= 1;
-                    }
-                }
-                KeyCode::Char('j') => {
-                    if self.y < text.term_height {
-                        self.y += 1;
-
-                        let row_len = text.rows[self.y + self.ren_y].chars.len();
-
-                        // if we are past last char in row move back to last char
-                        if self.x + self.ren_x >= row_len {
-                            self.x = text.rows[self.y + self.ren_y].chars.len();
-                            self.ren_x =
-                                cmp::max(0, row_len as i16 - text.term_width as i16) as usize;
-                        }
-
-                        execute!(stdout, cursor::MoveTo(self.x as u16, self.y as u16))?;
-                    } else {
-                        self.ren_y += 1;
-                    }
-                }
-                KeyCode::Char('h') => {
-                    if self.x > 0 {
-                        self.x -= 1;
-                        execute!(stdout, cursor::MoveLeft(1))?;
-                    } else if self.ren_x > 0 {
-                        self.ren_x -= 1;
-                    }
-                }
-                KeyCode::Char('l') => {
-                    if (self.x + self.ren_x) < text.rows[self.y + self.ren_y].chars.len() {
-                        if self.x < text.term_width {
-                            self.x += 1;
-                            execute!(stdout, cursor::MoveRight(1))?;
-                        } else {
-                            self.ren_x += 1;
-                        }
-                    }
-                }
-                _ => (),
+                // cursor movement
+                _ => self.handle_cursor_move(stdout, key_event.code, text)?,
             },
             _ => (),
         }
+        Ok(())
+    }
+
+    fn row_index(&self) -> usize {
+        self.row + self.ren_row
+    }
+
+    fn col_index(&self) -> usize {
+        self.col + self.ren_col
+    }
+
+    fn is_past_last_row(&self, text: &Text) -> bool {
+        self.row_index() as isize >= text.rows.len() as isize - 1
+    }
+
+    fn is_past_row_end(&self, text: &Text) -> bool {
+        let row_len = text.rows[self.row_index()].chars.len();
+        self.col_index() as isize >= row_len as isize - 1
+    }
+
+    fn move_cursor_end_of_row(
+        &mut self,
+        stdout: &mut Stdout,
+        text: &Text,
+    ) -> Result<(), io::Error> {
+        let row_len = text.rows[self.row_index()].chars.len();
+
+        self.col = text.rows[self.row_index()].chars.len();
+        self.ren_col = cmp::max(0, row_len as i16 - text.term_width as i16) as usize;
+
+        execute!(stdout, cursor::MoveTo(self.col as u16, self.row as u16))?;
+
+        Ok(())
+    }
+
+    fn handle_cursor_move(
+        &mut self,
+        stdout: &mut Stdout,
+        key_code: KeyCode,
+        text: &Text,
+    ) -> Result<(), io::Error> {
+        // if text is empty nowhere to move
+        if text.rows.is_empty() {
+            return Ok(());
+        }
+
+        match key_code {
+            // UP
+            KeyCode::Char('k') => {
+                if self.row > 0 {
+                    self.row -= 1;
+                } else if self.ren_row > 0 {
+                    self.ren_row -= 1;
+                }
+            }
+            // DOWN
+            KeyCode::Char('j') => {
+                if !self.is_past_last_row(text) {
+                    if self.row < text.term_height - 1 {
+                        self.row += 1;
+                    } else {
+                        self.ren_row += 1;
+                    }
+                }
+            }
+            // LEFT
+            KeyCode::Char('h') => {
+                if self.col > 0 {
+                    self.col -= 1;
+                } else if self.ren_col > 0 {
+                    self.ren_col -= 1;
+                }
+            }
+            // RIGHT
+            KeyCode::Char('l') => {
+                if !self.is_past_row_end(text) {
+                    if self.col < text.term_width - 1 {
+                        self.col += 1;
+                    } else {
+                        self.ren_col += 1;
+                    }
+                }
+            }
+            _ => (),
+        }
+
+        // move cursor
+
+        // if we are past last char in row move back to last char
+        if self.is_past_row_end(text) {
+            self.move_cursor_end_of_row(stdout, text)?;
+        }
+
+        execute!(stdout, cursor::MoveTo(self.col as u16, self.row as u16))?;
 
         Ok(())
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct Row {
     chars: Vec<char>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct Text {
     term_width: usize,
     term_height: usize,
@@ -194,16 +234,16 @@ impl Text {
 
         // we need to render entire terminal screen
         for y in 0..self.term_height {
-            let row_index = y + cursor.ren_y;
+            let row_index = y + cursor.ren_row;
             let mut line = vec![' '; self.term_width];
 
             // only print part of row that is visible
             // rest we will print ' '
-            if row_index < self.rows.len() && cursor.ren_x < self.rows[row_index].chars.len() {
-                self.rows[row_index].chars[cursor.ren_x
+            if row_index < self.rows.len() && cursor.ren_col < self.rows[row_index].chars.len() {
+                self.rows[row_index].chars[cursor.ren_col
                     ..cmp::min(
                         self.rows[row_index].chars.len(),
-                        cursor.ren_x + self.term_width,
+                        cursor.ren_col + self.term_width,
                     )]
                     .iter()
                     .enumerate()
