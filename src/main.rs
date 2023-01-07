@@ -64,8 +64,8 @@ impl Cursor {
         key_event: KeyEvent,
         text: &Text,
     ) -> Result<(), io::Error> {
-        match key_event.modifiers {
-            KeyModifiers::NONE => match key_event.code {
+        if key_event.modifiers == KeyModifiers::NONE {
+            match key_event.code {
                 // quite
                 KeyCode::Char('q') => {
                     fin_term(stdout)?;
@@ -74,8 +74,7 @@ impl Cursor {
 
                 // cursor movement
                 _ => self.handle_cursor_move(stdout, key_event.code, text)?,
-            },
-            _ => (),
+            }
         }
         Ok(())
     }
@@ -288,9 +287,8 @@ fn main() -> Result<(), io::Error> {
         text.draw_text(&mut stdout, &cursor)?;
 
         // handle input
-        match read()? {
-            Event::Key(key_event) => cursor.handle_key_event(&mut stdout, key_event, &text)?,
-            _ => (),
+        if let Event::Key(key_event) = read()? {
+            cursor.handle_key_event(&mut stdout, key_event, &text)?;
         }
     }
 }
