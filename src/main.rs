@@ -3,11 +3,12 @@ use std::{
     fs::File,
     io::{self, BufRead, Stdout, Write},
     path::PathBuf,
+    time::Duration,
 };
 
 use crossterm::{
     cursor::{self},
-    event::{read, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::{self},
     terminal::{self, Clear},
@@ -43,6 +44,15 @@ impl TermInfo {
             width: term_width as usize,
             height: term_height as usize,
         })
+    }
+
+    fn update_size(&mut self) -> Result<(), io::Error> {
+        let (term_width, term_height) = terminal::size()?;
+
+        self.width = term_width as usize;
+        self.height = term_height as usize;
+
+        Ok(())
     }
 }
 
@@ -304,12 +314,17 @@ fn main() -> Result<(), io::Error> {
     let mut cursor = Cursor::new();
 
     while term_info.alive {
+        // update term size
+        term_info.update_size()?;
+
         // draw
         text.draw_text(&mut term_info, &cursor)?;
 
         // handle input
-        if let Event::Key(key_event) = read()? {
-            cursor.handle_key_event(key_event, &mut term_info, &text)?;
+        if poll(Duration::from_millis(500))? {
+            if let Event::Key(key_event) = read()? {
+                cursor.handle_key_event(key_event, &mut term_info, &text)?;
+            }
         }
     }
 
