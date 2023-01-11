@@ -3,41 +3,70 @@ use std::{
     fs::File,
     io::{self, BufRead, Stdout, Write},
     path::PathBuf,
-    process::exit,
+    time::Duration,
 };
 
 use crossterm::{
     cursor::{self},
-    event::{read, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
     execute, queue,
     style::{self},
     terminal::{self, Clear},
 };
 
-fn init_term(stdout: &mut Stdout) -> Result<(), io::Error> {
-    // enable raw mode
-    terminal::enable_raw_mode()?;
-
-    // clear terminal
-    execute!(stdout, Clear(terminal::ClearType::All))?;
-
-    // move cursor to top left
-    execute!(stdout, cursor::MoveTo(0, 0))?;
-
-    Ok(())
+struct TermInfo {
+    alive: bool,
+    stdout: Stdout,
+    width: usize,
+    height: usize,
 }
 
-fn fin_term(stdout: &mut Stdout) -> Result<(), io::Error> {
-    // disable raw mode
-    terminal::disable_raw_mode()?;
+impl TermInfo {
+    fn new() -> Result<TermInfo, io::Error> {
+        // get handle to stdout()
+        let mut stdout = io::stdout();
 
-    // clear terminal
-    execute!(stdout, Clear(terminal::ClearType::All))?;
+        // enable raw mode
+        terminal::enable_raw_mode()?;
 
-    // move cursor to top left
-    execute!(stdout, cursor::MoveTo(0, 0))?;
+        // clear terminal
+        execute!(stdout, Clear(terminal::ClearType::All))?;
 
-    Ok(())
+        // move cursor to top left
+        execute!(stdout, cursor::MoveTo(0, 0))?;
+
+        // get term dimensions
+        let (term_width, term_height) = terminal::size()?;
+
+        Ok(TermInfo {
+            alive: true,
+            stdout,
+            width: term_width as usize,
+            height: term_height as usize,
+        })
+    }
+
+    fn update_size(&mut self) -> Result<(), io::Error> {
+        let (term_width, term_height) = terminal::size()?;
+
+        self.width = term_width as usize;
+        self.height = term_height as usize;
+
+        Ok(())
+    }
+}
+
+impl Drop for TermInfo {
+    fn drop(&mut self) {
+        // disable raw mode
+        terminal::disable_raw_mode().unwrap();
+
+        // clear terminal
+        execute!(self.stdout, Clear(terminal::ClearType::All)).unwrap();
+
+        // move cursor to top left
+        execute!(self.stdout, cursor::MoveTo(0, 0)).unwrap();
+    }
 }
 
 #[derive(Default, Debug)]
@@ -60,20 +89,20 @@ impl Cursor {
 
     fn handle_key_event(
         &mut self,
-        stdout: &mut Stdout,
         key_event: KeyEvent,
+        term_info: &mut TermInfo,
         text: &Text,
     ) -> Result<(), io::Error> {
         if key_event.modifiers == KeyModifiers::NONE {
             match key_event.code {
                 // quite
                 KeyCode::Char('q') => {
-                    fin_term(stdout)?;
-                    exit(0);
+                    term_info.alive = false;
+                    return Ok(());
                 }
 
                 // cursor movement
-                _ => self.handle_cursor_move(stdout, key_event.code, text)?,
+                _ => self.handle_cursor_move(key_event.code, term_info, text)?,
             }
         }
         Ok(())
@@ -98,23 +127,26 @@ impl Cursor {
 
     fn move_cursor_end_of_row(
         &mut self,
-        stdout: &mut Stdout,
+        term_info: &mut TermInfo,
         text: &Text,
     ) -> Result<(), io::Error> {
         let row_len = text.rows[self.row_index()].chars.len();
 
         self.col = text.rows[self.row_index()].chars.len();
-        self.ren_col = cmp::max(0, row_len as i16 - text.term_width as i16) as usize;
+        self.ren_col = cmp::max(0, row_len as i16 - term_info.width as i16) as usize;
 
-        execute!(stdout, cursor::MoveTo(self.col as u16, self.row as u16))?;
+        execute!(
+            term_info.stdout,
+            cursor::MoveTo(self.col as u16, self.row as u16)
+        )?;
 
         Ok(())
     }
 
     fn handle_cursor_move(
         &mut self,
-        stdout: &mut Stdout,
         key_code: KeyCode,
+        term_info: &mut TermInfo,
         text: &Text,
     ) -> Result<(), io::Error> {
         // if text is empty nowhere to move
@@ -133,13 +165,13 @@ impl Cursor {
 
                 // if we are past last char in row move back to last char
                 if self.is_past_row_end(text) {
-                    self.move_cursor_end_of_row(stdout, text)?;
+                    self.move_cursor_end_of_row(term_info, text)?;
                 }
             }
             // DOWN
             KeyCode::Char('j') => {
                 if !self.is_past_last_row(text) {
-                    if self.row < text.term_height - 1 {
+                    if self.row < term_info.height - 1 {
                         self.row += 1;
                     } else {
                         self.ren_row += 1;
@@ -148,7 +180,7 @@ impl Cursor {
 
                 // if we are past last char in row move back to last char
                 if self.is_past_row_end(text) {
-                    self.move_cursor_end_of_row(stdout, text)?;
+                    self.move_cursor_end_of_row(term_info, text)?;
                 }
             }
             // LEFT
@@ -162,7 +194,7 @@ impl Cursor {
             // RIGHT
             KeyCode::Char('l') => {
                 if !self.is_past_row_end(text) {
-                    if self.col < text.term_width - 1 {
+                    if self.col < term_info.width - 1 {
                         self.col += 1;
                     } else {
                         self.ren_col += 1;
@@ -173,7 +205,10 @@ impl Cursor {
         }
 
         // move cursor
-        execute!(stdout, cursor::MoveTo(self.col as u16, self.row as u16))?;
+        execute!(
+            term_info.stdout,
+            cursor::MoveTo(self.col as u16, self.row as u16)
+        )?;
 
         Ok(())
     }
@@ -186,21 +221,12 @@ struct Row {
 
 #[derive(Debug)]
 struct Text {
-    term_width: usize,
-    term_height: usize,
     rows: Vec<Row>,
 }
 
 impl Text {
     fn new() -> Result<Text, io::Error> {
-        let (term_width, term_height) = terminal::size()?;
-        let (term_width, term_height) = (term_width.into(), term_height.into());
-
-        Ok(Text {
-            term_width,
-            term_height,
-            rows: vec![],
-        })
+        Ok(Text { rows: vec![] })
     }
 
     fn from_file(path: PathBuf) -> Result<Text, io::Error> {
@@ -230,15 +256,15 @@ impl Text {
         Ok(text)
     }
 
-    fn draw_text(&self, stdout: &mut Stdout, cursor: &Cursor) -> Result<(), io::Error> {
+    fn draw_text(&self, term_info: &mut TermInfo, cursor: &Cursor) -> Result<(), io::Error> {
         // save cursor position and hide
-        execute!(stdout, cursor::SavePosition)?;
-        execute!(stdout, cursor::Hide)?;
+        execute!(term_info.stdout, cursor::SavePosition)?;
+        execute!(term_info.stdout, cursor::Hide)?;
 
         // we need to render entire terminal screen
-        for y in 0..self.term_height {
+        for y in 0..term_info.height {
             let row_index = y + cursor.ren_row;
-            let mut line = vec![' '; self.term_width];
+            let mut line = vec![' '; term_info.width];
 
             // only print part of row that is visible
             // rest we will print ' '
@@ -246,32 +272,33 @@ impl Text {
                 self.rows[row_index].chars[cursor.ren_col
                     ..cmp::min(
                         self.rows[row_index].chars.len(),
-                        cursor.ren_col + self.term_width,
+                        cursor.ren_col + term_info.width,
                     )]
                     .iter()
                     .enumerate()
                     .for_each(|(i, c)| line[i] = *c);
             }
 
-            queue!(stdout, cursor::MoveTo(0, y.try_into().unwrap()))?;
-            queue!(stdout, style::Print(line.iter().collect::<String>()))?;
+            queue!(term_info.stdout, cursor::MoveTo(0, y.try_into().unwrap()))?;
+            queue!(
+                term_info.stdout,
+                style::Print(line.iter().collect::<String>())
+            )?;
         }
 
-        stdout.flush()?;
+        term_info.stdout.flush()?;
 
         // restore cursor position and show
-        execute!(stdout, cursor::RestorePosition)?;
-        execute!(stdout, cursor::Show)?;
+        execute!(term_info.stdout, cursor::RestorePosition)?;
+        execute!(term_info.stdout, cursor::Show)?;
 
         Ok(())
     }
 }
 
 fn main() -> Result<(), io::Error> {
-    // get handle to stdout()
-    let mut stdout = io::stdout();
-
-    init_term(&mut stdout)?;
+    // init TermInfo struct
+    let mut term_info = TermInfo::new()?;
 
     // get args
     let args = env::args().collect::<Vec<String>>();
@@ -286,13 +313,20 @@ fn main() -> Result<(), io::Error> {
     // init Cursor struct
     let mut cursor = Cursor::new();
 
-    loop {
+    while term_info.alive {
+        // update term size
+        term_info.update_size()?;
+
         // draw
-        text.draw_text(&mut stdout, &cursor)?;
+        text.draw_text(&mut term_info, &cursor)?;
 
         // handle input
-        if let Event::Key(key_event) = read()? {
-            cursor.handle_key_event(&mut stdout, key_event, &text)?;
+        if poll(Duration::from_millis(500))? {
+            if let Event::Key(key_event) = read()? {
+                cursor.handle_key_event(key_event, &mut term_info, &text)?;
+            }
         }
     }
+
+    Ok(())
 }
